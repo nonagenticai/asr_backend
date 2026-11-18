@@ -1,0 +1,63 @@
+[package]
+name = "asr-backend-rs"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Whisper ASR HTTP service — Rust rewrite of the Python asr_backend"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
+# Metal-accelerated Whisper via whisper.cpp. `metal` is a default feature so
+# the deployed binary gets it, but it is NOT implied: a CI runner on Linux has
+# no Metal, and the tests under test/ exercise the HTTP surface, so the gate
+# builds with `--no-default-features` there.
+whisper-rs = { version = "0.16" }
+# Audio decode. mp3/aac are feature-gated in symphonia 0.6: the Python service
+# accepted whatever the caller uploaded, so both must be on. `pcm` is NOT implied
+# by `wav` (0.6 splits container from codec) and without it the most common
+# upload of all — a plain PCM WAV — fails to decode; same for `vorbis` behind
+# `ogg`.
+symphonia = { version = "0.6", default-features = false, features = ["wav", "flac", "ogg", "mp3", "aac", "isomp4", "pcm", "vorbis"] }
+# whisper.cpp requires 16 kHz mono f32. symphonia decodes but does NOT resample,
+# and a hand-rolled linear resampler audibly degrades ASR. rubato is the
+# standard Rust SRC.
+rubato = "1"
+# rubato 1.x consumes/produces `audioadapter` buffers rather than slices. This is
+# the companion crate that provides them (already in rubato's own tree).
+audioadapter-buffers = "2"
+# Fire-and-forget metering to the Redis cost stream (METERING_REDIS_URL unset
+# means no-op, matching the Python emitters).
+redis = { version = "0.32", features = ["tokio-comp"] }
+# Licence introspection (LICENSE_INTROSPECT_URL). The Python service used
+# w2v_common's AuthMiddleware; this is the direct equivalent.
+#
+# `rustls-tls-native-roots`, NOT `rustls-tls`: licenses.test is signed by
+# the estate's private `internal-ca`, which lives in the host keychain and in
+# nothing else. The bundled Mozilla roots (`rustls-tls`) reject it and every
+# introspection then fails with "error sending request" — which this service
+# correctly turns into a 503 on every gated call, i.e. a total outage that looks
+# like a licence-service fault rather than a trust-store one.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+# Request ids in the error envelope, v7 so they sort by time like the Python
+# middleware's (w2v_common uses uuid7).
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
+[features]
+# The deployed binary is Metal-backed. CI passes --no-default-features because
+# a Linux runner has no Metal; whisper.cpp then builds for CPU and the tests,
+# which never touch the accelerator, still gate the change.
+default = ["metal"]
+metal = ["whisper-rs/metal"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

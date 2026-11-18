@@ -1,0 +1,41 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+.venv-*/
+.uv-cache/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.ty_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+coverage.xml
+htmlcov/
+logs/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+*.swp
+
+# Rust build output. cargo-guard keeps ONE shared target directory per repo at
+# <repo-root>/target/claude, so ignoring `target/` at any depth covers that and
+# a plain local compile inside rust/ as well.
+target/
+
+# The prebuilt Rust binary, copied into the host checkout by hand: neither mini
+# has a toolchain. Ignored so it never reads as an untracked change — a host
+# `git pull` stays silent, and nobody is tempted to `git clean -xdf` the
+# running service out of existence.
+/asr-backend-rs
+# The previous build, kept beside it as an on-host rollback. Same class, same
+# reason: on 2026-11-14 an untracked one made host-config-sync report the mini2
+# checkout DIRTY and stop deploying it ("stays frozen until the worktree is
+# clean") — a binary artifact must never be able to freeze a deploy.
+/asr-backend-rs.prev

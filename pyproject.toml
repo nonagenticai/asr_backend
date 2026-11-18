@@ -1,0 +1,112 @@
+[project]
+license = "Apache-2.0"
+name = "asr-backend"
+version = "0.1.0"
+description = "ASR (speech-to-text) inference backend for Apple Silicon — mlx-whisper"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "python-multipart>=0.0.20",
+    "python-dotenv>=1.0.0",
+    "psutil>=6.0.0",
+    "prometheus-fastapi-instrumentator>=8.1.0",
+    # License-token introspection
+    "httpx>=0.28.1",
+    "cachetools>=5.5.0",
+    # Cost-event emission to the metering Redis Stream (metering:costs)
+    "redis>=8.0.0",
+    # Fleet-canonical auth: AuthMiddleware + User come from w2v_common (single-flight
+    # license introspection + 10s timeout as of 0.20.1). Replaces the vendored copy.
+    # The `<0.67` ceiling is GONE (2026-08-30). It was deliberate: it held this
+    # service below w2v_common #127 ("tenant is a required uuid; no sentinel, no
+    # substitution") until the emit path was proven to refuse a missing tenant
+    # rather than drop it. #28 did that — `services.metering.require_tenant` 401s
+    # before any emit and `tests/test_tenant_required_routes.py` asserts xadd is
+    # never awaited — so the precondition is met and the pin outlived its reason.
+    # Floor is 0.67.10, which also carries #138 (omitting tenant_source PRESERVES
+    # provenance) and #119 (the metering Redis DSN, password included, was logged
+    # at INFO on every boot — live in this service on 2026-08-28).
+    # 0.97.0: w2v_common.admission (GPU AdmissionGate, asr_backend#34); 0.99.0: DisconnectProbeMiddleware.
+    # 0.112.0: W2V_LICENSE_GATE_APP_KEYS / W2V_LICENSE_GATE_TOKEN_APP_KEYS (w2v_common#238,
+    # published as 0.112.0 by #240 — the 0.111.0 wheel is #237's and lacks the gate) —
+    # ASR is a shared platform `speech` service (owner 2026-10-22); below 0.112.0 the gate
+    # hard-codes app key `w2v` and the env is inert.
+    "w2v-common>=0.112.0",
+    # ASR engines (Apple Silicon only — see CI note)
+    "mlx-whisper>=0.4.0 ; sys_platform == 'darwin'",
+    "numpy>=1.24.0",
+]
+
+[tool.uv]
+# w2v-common is published to the internal PyPI (self-signed CA → insecure-host).
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = {find = {where = ["src"]}}
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "pytest-mock>=3.14.0",
+    "pytest-cov>=7.0.0",
+    "httpx>=0.28.1",
+    "ruff>=0.15",
+    "ty>=0.0.32",
+    "bandit>=1.8.0",
+    "pip-audit>=2.9.0",
+    # Transitive via pip-audit -> pip-api -> pip. PYSEC-2026-3721 affects
+    # pip < 26.2; declared explicitly so a future `uv lock` cannot walk the
+    # lock back into the vulnerable range with pip-audit still green.
+    "pip>=26.2",
+    "detect-secrets>=1.5.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+exclude = ["__pycache__", ".venv", "logs"]
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "B", "UP", "I", "S", "BLE"]
+ignore = [
+    "S101",  # asserts in tests
+    "S104",  # 0.0.0.0 binding (we listen on LAN intentionally)
+    "B008",  # FastAPI's `Depends(...)` and `File(...)` patterns require call-in-default
+]
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.local-ci]
+skip_tests = true  # Apple-Silicon-only deps; tests run on mini2
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests requiring Apple Silicon + model weights",
+]
+
+[tool.ty.environment]
+python-version = "3.14"
+extra-paths = ["src"]
+
+[tool.ty.rules]
+import-not-found = "ignore"
+
+[tool.uv.sources]
+# The published source tree resolves its shared library from the public
+# repository at the release tag; the private index is not reachable here.
+w2v-common = { git = "https://github.com/nonagenticai/w2v_common", tag = "v0.115.4" }
