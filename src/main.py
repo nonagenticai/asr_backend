@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -50,7 +50,7 @@ LEAK_EXCEPTION_DETAILS = os.getenv("LEAK_EXCEPTION_DETAILS", "").lower() == "tru
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Starting %s v%s (%s)", SERVICE_NAME, VERSION, ENVIRONMENT)
     # GPU admission gate (asr_backend#34). Built here so GPU_LANE_TRANSCRIBE_*
     # env overrides are read at startup; a malformed value fails the boot loudly.
