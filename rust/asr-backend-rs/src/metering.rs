@@ -65,7 +65,7 @@ fn is_billable_tenant(raw: &str) -> bool {
 /// bills as `X-Project-Id` for a tenant-level call. Its own inverse.
 fn tenant_level_project_id(tenant: uuid::Uuid) -> uuid::Uuid {
     let b = tenant.as_u128().swap_bytes();
-    let lo = 0x0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_u128;
+    let lo = 0x0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_u128;
     uuid::Uuid::from_u128(((b & lo) << 4) | ((b >> 4) & lo))
 }
 
