@@ -58,16 +58,42 @@ fn is_billable_tenant(raw: &str) -> bool {
     }
 }
 
+/// The platform's project for a tenant that has no project of its own: the 32
+/// hex digits of the tenant uuid reversed, as a uuid. This is the platform
+/// convention (`strata_rag` `metering.rs`, agent
+/// `providers/llm.rs::tenant_level_project_id`) and is what the inference-router
+/// bills as `X-Project-Id` for a tenant-level call. Its own inverse.
+fn tenant_level_project_id(tenant: uuid::Uuid) -> uuid::Uuid {
+    let b = tenant.as_u128().swap_bytes();
+    let lo = 0x0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_u128;
+    uuid::Uuid::from_u128(((b & lo) << 4) | ((b >> 4) & lo))
+}
+
 /// The Redis field set.
 ///
 /// `input_tokens` is whole seconds of audio because that is the unit the
 /// mlx-whisper pricing row converts (`283.33333333 / 1M` seconds, output 0);
 /// `unit`/`quantity` stay as human-readable context for the logs and the DLQ.
-fn cost_fields(tenant_id: &str, audio_seconds: f64) -> Vec<(&'static str, String)> {
+///
+/// `project_id` is the tenant-level project above, so ASR usage is attributed
+/// instead of landing on billing's `NULL_PROJECT_ID` sentinel (the
+/// `BillingProjectAttributionCoverageRegressed` rows). `timestamp` is the
+/// producer's event time, without which billing falls back to `created_at`.
+fn cost_fields(
+    tenant_id: &str,
+    audio_seconds: f64,
+    timestamp: &str,
+) -> Vec<(&'static str, String)> {
+    let project_id = uuid::Uuid::parse_str(tenant_id.trim())
+        .map(tenant_level_project_id)
+        .map(|p| p.to_string())
+        .unwrap_or_default();
     vec![
         ("service_key", SERVICE_KEY.to_string()),
         ("provider", PROVIDER.to_string()),
         ("tenant_id", tenant_id.trim().to_string()),
+        ("project_id", project_id),
+        ("timestamp", timestamp.to_string()),
         // Advisory only: billing recomputes the authoritative cost from
         // provider_pricing, exactly as it does for the Python provider.
         ("cost_usd", "0.0".to_string()),
@@ -103,7 +129,10 @@ pub async fn emit_cost_event(redis_url: &str, tenant_id: &str, audio_seconds: f6
     };
 
     let stream = stream_name(std::env::var("METERING_STREAM").ok().as_deref());
-    let fields = cost_fields(tenant_id, audio_seconds);
+    // The event time, with an explicit `Z` offset. Billing accepts a `Z`, refuses
+    // a naive value, and counts every fallback to `created_at`.
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let fields = cost_fields(tenant_id, audio_seconds, &timestamp);
 
     let res: redis::RedisResult<String> = redis::cmd("XADD")
         .arg(&stream)
@@ -159,8 +188,34 @@ mod tests {
     }
 
     #[test]
+    fn the_tenant_level_project_is_the_platform_convention() {
+        // Live billing rows prove both vectors: tenant `019fe708…` is the
+        // `nonagentic` row's covered project; `01a1cf6d…` is the ASR tenant.
+        for (tenant, project) in [
+            (
+                "019fe708-424a-7a31-bce8-da19020dc62b",
+                "b26cd020-91ad-8ecb-13a7-a424807ef910",
+            ),
+            (
+                "01a1cf6d-23af-7e0e-8b07-89c8f06bafb4",
+                "4bfab60f-8c98-70b8-e0e7-fa32d6fc1a10",
+            ),
+        ] {
+            let tenant = uuid::Uuid::parse_str(tenant).unwrap();
+            let expected = uuid::Uuid::parse_str(project).unwrap();
+            assert_eq!(tenant_level_project_id(tenant), expected);
+            // Its own inverse: the map is a bijection on uuids.
+            assert_eq!(tenant_level_project_id(expected), tenant);
+        }
+    }
+
+    #[test]
     fn the_payload_carries_what_billing_requires() {
-        let fields = cost_fields("0190c3a1-6a4e-7f0a-9c1d-2b3e4f5a6b7c", 60.0);
+        let fields = cost_fields(
+            "0190c3a1-6a4e-7f0a-9c1d-2b3e4f5a6b7c",
+            60.0,
+            "2026-11-27T07:00:00.000Z",
+        );
         let get = |name: &str| {
             fields
                 .iter()
@@ -180,5 +235,26 @@ mod tests {
         assert_eq!(get("input_tokens"), Some("60"));
         assert_eq!(get("output_tokens"), Some("0"));
         assert_eq!(get("cost_usd"), Some("0.0"));
+        // The project axis: the tenant's own derived project, never the sentinel.
+        let expected_project = tenant_level_project_id(
+            uuid::Uuid::parse_str("0190c3a1-6a4e-7f0a-9c1d-2b3e4f5a6b7c").unwrap(),
+        )
+        .to_string();
+        assert_eq!(get("project_id"), Some(expected_project.as_str()));
+        assert_ne!(
+            get("project_id"),
+            Some("00000000-0000-0000-0000-000000000004")
+        );
+        // The event time billing's parse_event_ts accepts (explicit Z).
+        assert_eq!(get("timestamp"), Some("2026-11-27T07:00:00.000Z"));
+    }
+
+    #[test]
+    fn an_emitted_timestamp_is_iso8601_with_an_offset() {
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        // The shape billing accepts: date T time . millis Z.
+        assert!(timestamp.ends_with('Z'), "{timestamp}");
+        assert_eq!(timestamp.len(), "2026-11-27T07:00:00.000Z".len());
+        assert!(chrono::DateTime::parse_from_rfc3339(&timestamp).is_ok());
     }
 }

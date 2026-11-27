@@ -47,6 +47,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Request ids in the error envelope, v7 so they sort by time like the Python
 # middleware's (w2v_common uses uuid7).
 uuid = { version = "1", features = ["v7"] }
+# The cost event's `timestamp`. Billing refuses a missing one and falls back to
+# `created_at`, which bills a late event on its ingest day instead of its event
+# day. `now` is enough for `Utc::now()`; no local timezone database.
+chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "multipart"] }
